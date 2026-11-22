@@ -88,6 +88,7 @@ Unified diff пишемо самі в `internal/sandbox`. Пакет diff у std
 2. `builder` (`golang:1.26-bookworm`): `dist/` копіюється в `internal/web/dist`, далі `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./cmd/dreet`.
 3. `runtime-go` (`golang:1.26-bookworm`):
    - створює користувача `dreet` (UID 10001);
+   - створює `/data` і `/var/cache/go-build` з власником `dreet`, щоб іменовані томи успадкували ці права;
    - прогріває `GOCACHE=/var/cache/go-build` прогоном `go test -race` по ключових пакетах stdlib;
    - копіює бінарник `dreet` і колоди.
 
@@ -96,7 +97,7 @@ Unified diff пишемо самі в `internal/sandbox`. Пакет diff у std
 | Ресурс | Налаштування |
 | :---- | :---- |
 | Порт | `127.0.0.1:8787:8787`, лише loopback хоста. Усередині контейнера сервер слухає `0.0.0.0:8787`. |
-| `/data` | Bind-mount `./data`. Тут SQLite `dreet.db` разом із `-wal` і `-shm`. |
+| `/data` | Іменований том `dreet-data`, тут SQLite `dreet.db` разом із `-wal` і `-shm`. Docker при першому підключенні копіює в порожній том вміст і власника `/data` з образу (UID 10001), тож налаштовувати права на хості не треба. Бекап: `docker compose cp dreet:/data/dreet.db .`. **Увага:** `docker compose down -v` видаляє том разом з історією. |
 | `/app/decks` | Bind-mount `./decks` у режимі `ro`, тож зміни підхоплюються без перезбирання. |
 | `/work` | `tmpfs`, `size=128m,mode=1777`. Робочі директорії сесій у RAM. |
 | `/tmp` | `tmpfs`, `size=128m,mode=1777`, **без `noexec`**. Тут `go test` збирає й запускає тестовий бінарник (`GOTMPDIR`). |
