@@ -133,7 +133,8 @@ deployed copy of `~/wrk/common_claude/skills/fix-review/`: change canon first, t
 - Spec measurements (tumanomir corpus, snapshots, reports) live in `../context/tumanomir/`; take them with
   `minions/spec-measure.sh`. The instrument is pinned in `../context/tumanomir/.tumanomir.yaml`, and calibration
   needs every corpus row to share it.
-- Session tooling (local, gitignored state):
+- Session tooling (local, gitignored state; hook registration lives only in the gitignored
+  `.claude/settings.local.json`, so set it up again by hand on a fresh clone):
   - `.claude/hooks/session-end.sh` and `session-index.sh` run on Stop: a verbatim checkpoint, plus mining into
     `.claude/sessions.db`.
   - `session-last.sh` runs on SessionStart.
