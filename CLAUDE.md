@@ -117,3 +117,13 @@ Open the UI with `chromium --app=http://127.0.0.1:8787`.
 
 `main` is protected by a ruleset: PRs only, no force-push, no deletion. Work on `<type>-<slug>`
 branches and squash-merge. No required CI checks yet.
+
+## Agent tooling
+
+- `./minions/` holds the agent's own helpers (catalog: `minions/TOOLS.md`). Nothing the service, a hook or CI depends
+  on may live there. A tool the product needs is a utility and belongs in the codebase.
+- `./tmp/` is gitignored scratch. When a `tmp/` script starts being reused, promote it to `minions/` and add a
+  `TOOLS.md` line.
+- Spec measurements (tumanomir corpus, snapshots, reports) live in `../context/tumanomir/`; take them with
+  `minions/spec-measure.sh`. The instrument is pinned in `../context/tumanomir/.tumanomir.yaml`, and calibration
+  needs every corpus row to share it.
