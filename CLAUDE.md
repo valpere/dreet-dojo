@@ -100,9 +100,11 @@ Keep business logic out of `api`, because a stdio JSON-RPC transport is planned 
 
 ## Verification (before reporting done)
 
-These commands are planned and will be confirmed once the scaffold exists:
+`make check` is the pre-merge gate (also what `/fix-review` runs). Today it runs `tumanomir check docs/`; add
+the Go and frontend checks below to it as code lands. Planned commands:
 
 ```bash
+make check                                         # pre-merge gate
 go vet ./... && go test -race ./...
 go test -race -run TestName ./internal/<pkg>/      # single test
 npm --prefix web run build && go build ./cmd/dreet # frontend must embed cleanly
@@ -118,6 +120,10 @@ Open the UI with `chromium --app=http://127.0.0.1:8787`.
 `main` is protected by a ruleset: PRs only, no force-push, no deletion. Work on `<type>-<slug>`
 branches and squash-merge. No required CI checks yet.
 
+PR review: `/fix-review <PR>` (project-local, `.claude/skills/fix-review/`; three Ollama Cloud rounds, Claude as
+arbiter; needs `OLLAMA_API_KEY` in `.env.local`). After review, land with `minions/pr-land.sh <PR>`. The skill is a
+deployed copy of `~/wrk/common_claude/skills/fix-review/`: change canon first, then sync diff-first.
+
 ## Agent tooling
 
 - `./minions/` holds the agent's own helpers (catalog: `minions/TOOLS.md`). Nothing the service, a hook or CI depends
@@ -127,3 +133,15 @@ branches and squash-merge. No required CI checks yet.
 - Spec measurements (tumanomir corpus, snapshots, reports) live in `../context/tumanomir/`; take them with
   `minions/spec-measure.sh`. The instrument is pinned in `../context/tumanomir/.tumanomir.yaml`, and calibration
   needs every corpus row to share it.
+- Session tooling (local, gitignored state; hook registration lives only in the gitignored
+  `.claude/settings.local.json`, so set it up again by hand on a fresh clone):
+  - `.claude/hooks/session-end.sh` and `session-index.sh` run on Stop: a verbatim checkpoint, plus mining into
+    `.claude/sessions.db`.
+  - `session-last.sh` runs on SessionStart.
+  - `/session-end` writes the reviewed handoff `.claude/session-state.md`; `/recall` searches past sessions.
+  - The systemd timer `session-maintain-dreet-dojo` runs embed + distill nightly.
+- `/self-learn log` records sourced mistakes and wins in `_patterns/`. Raw `*.jsonl` is gitignored; the `.md`
+  summaries are tracked. ADRs stay in `docs/architecture.md` §7.
+- Second opinion from several independent models: `~/wrk/common_claude/minions/council -p "…"` (or
+  `council prompt.md`; `-a agy,opencode,codex,mirror`). It is read-only and writes to `tmp/council/<ts>/`. Call it
+  by path and never copy it into this repo. Treat its answers as opinions to verify.

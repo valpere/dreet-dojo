@@ -14,3 +14,17 @@
 
 # Local scratch
 /tmp/
+
+# Claude Code session state (session-end / session-recall) — local-only
+.claude/sessions.db*
+.claude/session-checkpoint.json
+.claude/session-checkpoint.json.lock
+.claude/session-state.md
+.claude/session-log.md
+.claude/settings.local.json
+
+# fix-review telemetry — local-only
+.claude/skills/fix-review/telemetry.jsonl
+
+# self-learn raw logs — summaries (.md) are tracked
+_patterns/*.jsonl
