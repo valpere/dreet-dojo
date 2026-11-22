@@ -121,20 +121,19 @@ fi
 # (e.g. a project may use AI_PROVIDER_API_KEY instead of OLLAMA_API_KEY).
 API_KEY_ENV=$(yq -r '.api_key_env // "OLLAMA_API_KEY"' "$CONFIG" 2>/dev/null || echo OLLAMA_API_KEY)
 LOCAL_ONLY=$(yq -r '.local_only // false' "$CONFIG" 2>/dev/null || echo false)
-load_env_key "$API_KEY_ENV"
-API_KEY="${!API_KEY_ENV}"
-
-# Cloud projects require a key. Local-only configs set local_only: true and
-# run reviewers.ollama (local models) without auth.
-if [ -z "$API_KEY" ] && [ "$LOCAL_ONLY" != "true" ]; then
-  echo "ERROR: $API_KEY_ENV not found. Set it in .env.local for Ollama cloud, or set local_only: true in config.yaml for a local-only project." >&2
-  exit 1
-fi
+load_env_key "$API_KEY_ENV" 2>/dev/null || true
+API_KEY="${!API_KEY_ENV:-}"
+# The key is optional: a signed-in local daemon (`ollama signin`) proxies `:cloud`
+# models on localhost without auth. rest_post omits the Authorization header when
+# the key is empty. The cloud probe below runs either way, so a daemon that cannot
+# reach the cloud is caught there instead of producing a silent "clean" review.
+[ -z "$API_KEY" ] && [ "$LOCAL_ONLY" != "true" ] && echo "note: no $API_KEY_ENV — using the signed-in local daemon for cloud models" >&2
 ```
 
-If the key is empty and `local_only` is not `true`, abort loudly (above) — a
-cloud project with a broken/missing key must not silently produce a "clean"
-0-finding review. When `local_only: true`, the probe and failover are skipped
+A missing key is not fatal (dreet-dojo deviation from canon, 2026-11-22): the
+probe decides whether the cloud tier works, and a failed probe with no failover
+tier still marks `cloud_unavailable`, so a broken setup cannot pass silently.
+When `local_only: true`, the probe and failover are skipped
 and `reviewers.ollama` (local models) runs as primary.
 
 **Provider probe + failover:**
@@ -188,7 +187,7 @@ LOCAL_TIER_EXISTS="no"
 EXTERNAL_AGENTS_EXIST="no"
 yq -e '.reviewers.external_agents' "$CONFIG" >/dev/null 2>&1 && EXTERNAL_AGENTS_EXIST="yes"
 
-# Probe the primary only in cloud mode (key present, not local-only). If the
+# Probe the primary whenever not local-only (key optional — see Step 0). If the
 # probe fails, skip the doomed cloud call for every round (CLOUD_KNOWN_BAD)
 # and let run_round()'s cascade decide per round which failover tier actually
 # answers — external_agents (tier 2) tried before ollama_local (tier 3), same
@@ -197,7 +196,7 @@ yq -e '.reviewers.external_agents' "$CONFIG" >/dev/null 2>&1 && EXTERNAL_AGENTS_
 # mandatory Step 11 notice still fires (rather than silently producing a
 # 0-finding "clean" review).
 CLOUD_KNOWN_BAD="no"
-if [ -n "$API_KEY" ]; then
+if [ "$LOCAL_ONLY" != "true" ]; then
   if ! probe_provider "$API_URL" "$API_KEY" "$MODEL_R2" 2>&1; then
     if [ "$EXTERNAL_AGENTS_EXIST" = "yes" ] || [ "$LOCAL_TIER_EXISTS" = "yes" ]; then
       echo "⚠️  FAILOVER: Ollama cloud unavailable — routing rounds through failover tiers"
@@ -884,7 +883,7 @@ Action: if "external_agents" — review ran on an external CLI tool's own free
 tier (see per-round detail below for which one); check that tool's account if
 this is unexpected. If "ollama_local" — review ran on (weaker, slower) local
 models. If "cloud_unavailable" — the PR was NOT reviewed (0 findings); do NOT
-merge blindly. Check `ollama serve` and OLLAMA_API_KEY in .env.local, then
+merge blindly. Check `ollama serve` and `ollama signin` (or OLLAMA_API_KEY in .env.local), then
 re-run.
 ```
 
