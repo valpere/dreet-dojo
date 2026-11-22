@@ -1,6 +1,6 @@
 # fix-review config for dreet-dojo — deployed copy of ~/wrk/common_claude/skills/fix-review/config.yaml
 # (2026-11-22, canonical models unchanged). Sync diff-first from canon; do not hand-diverge.
-# Key: OLLAMA_API_KEY from .env.local (gitignored). Gates: Makefile `check:` target (auto-detected).
+# Key: optional — `:cloud` models go through the signed-in local daemon (no OLLAMA_API_KEY needed). Gates: Makefile `check:` target (auto-detected).
 #
 #
 # Provider: Ollama only (OpenRouter removed — we run Ollama exclusively).
