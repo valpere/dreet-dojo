@@ -1,0 +1,109 @@
+# fix-review config for dreet-dojo — deployed copy of ~/wrk/common_claude/skills/fix-review/config.yaml
+# (2026-11-22, canonical models unchanged). Sync diff-first from canon; do not hand-diverge.
+# Key: OLLAMA_API_KEY from .env.local (gitignored). Gates: Makefile `check:` target (auto-detected).
+#
+#
+# Provider: Ollama only (OpenRouter removed — we run Ollama exclusively).
+#   - Primary:  Ollama cloud (reviewers.ollama)          — requires OLLAMA_API_KEY
+#   - Tier 2:   external agent CLIs (external_agents)    — own free tiers
+#   - Last:     Ollama local (reviewers.ollama_local)    — requires `ollama serve`
+# Both Ollama tiers go through the local Ollama daemon (ollama_api_url); cloud models
+# are proxied to Ollama Cloud by the daemon, local models run on-device.
+#
+# provider: ollama
+provider: ollama
+
+reviewers:
+  # Primary — Ollama cloud (3 rounds, different families for independent review)
+  # round_1: glm-5.1, NOT glm-5.2 — REVERTED 2026-09-04. Briefly swapped
+  # to glm-5.2 earlier the same day on "supersedes glm-5.1, same family,
+  # no reason to run the older one" — that reasoning ignored already-
+  # existing cost-calibration data (ollama-general-models.md): glm-5.2 is
+  # ~1.75× more expensive per call than glm-5.1 (39.5× vs 22.5× the
+  # lightest-model baseline, trivial-prompt test, both "high" reliability).
+  # ollama-cloud-coding-models.md's own "Практична порада" section already
+  # documented a prior deliberate decision to keep glm-5.1 for exactly this
+  # reason — the swap re-broke a choice that had already been made
+  # correctly once. Family-succession alone is not sufficient justification
+  # for a recurring-cost model swap; check the cost table first.
+  #
+  # 2026-09-17: glm-5.1 and deepseek-v4-flash:0731 (the resolved snapshot
+  # behind the plain deepseek-v4-flash tag — confirmed in
+  # ollama-general-models.md's cost-calibration section) both retire on
+  # Ollama Cloud 2026-09-25 (forced, not a discretionary swap — the "check
+  # cost data first" caution above applies to optional succession, not to
+  # a model being physically removed). Ollama's own announcement names
+  # glm-5.3 and deepseek-v4.1-flash as the direct 1:1 replacements.
+  ollama:
+    # think: "low" — with think:false glm-5.3 leaks its reasoning as prose into
+    # `content` (not a JSON array) -> parser sees 0 findings, round looks
+    # "clean" (lance-agent: 0/49 rounds 2026-10-09..18; PR #439). Its default
+    # think:true is max effort and burns the budget (empty content at 10000
+    # tokens, valid only ~16000, minutes per round). "low" gives valid JSON
+    # in ~10 s / ~650 tokens within the normal 4000 cap — measured
+    # 2026-10-24 here; github_pages reached the same via PRs #139/#140/#143
+    # (2026-09-21). "medium" is already too much (4000 tokens, empty).
+    round_1: { model: glm-5.3:cloud, think: low }
+    round_2: { model: deepseek-v4.1-flash:cloud }
+    round_3: { model: kimi-k2.7-code:cloud }
+
+  # Tier 2 — external agent CLIs, own free-tier subscriptions/logins,
+  # entirely independent of Ollama's quota. Tried in this order per round;
+  # first one that returns a non-empty result wins. This is a pool that
+  # backs itself up — any single tool's free tier can run dry, so having
+  # several matters more than picking "the best one". See lib/agents.sh
+  # for the adapters. `agy` initially looked broken (kept exploring the
+  # filesystem instead of answering) — root cause found 2026-07-30: it was
+  # a testing mistake, not an agy limitation. `--prompt "text"` is just an
+  # alias for the `--print` boolean flag, not a value-taking option — the
+  # actual prompt must be a bare positional argument (`-p "text"`, per the
+  # working pattern already used in session-end.sh). Fixed invocation
+  # verified working, including with --mode plan (read-only).
+  external_agents:
+    - { tool: cursor-agent, model: auto }
+    - { tool: agy, model: "Gemini 3.8 Flash (Low)" }
+    - { tool: omp }
+    - { tool: codex }
+    - { tool: opencode, model: "opencode/nemotron-3-ultra-free" }
+    - { tool: kilo }
+    - { tool: kiro-cli }
+
+  # Tier 3 — Ollama local (повністю офлайн, без ключа). Last resort — slow
+  # on this machine, only reached if both cloud and every external agent
+  # above failed. round_3: laguna-xs-2.1 (was laguna-xs.2 — live successor,
+  # +5.4% SWE-bench Multilingual per ollama.com/library/laguna-xs-2.1,
+  # same size class; upgraded 2026-09-04)
+  ollama_local:
+    round_1: { model: granite4.1:8b }
+    round_2: { model: qwen3.8:27b }
+    round_3: { model: laguna-xs-2.1 }
+
+ollama_api_url: http://localhost:11434/api/chat
+
+# arbiter: claude (always — no model call, Claude itself adjudicates)
+
+# Post a collapsible PR comment summarising findings + arbiter rulings.
+post_summary_to_pr: true
+
+# Telemetry — JSONL appended after each run.
+# Project-local: .claude/skills/fix-review/telemetry.jsonl (gitignored).
+telemetry_enabled: true
+
+# Pricing per 1M tokens (USD) — Ollama cloud/local are free. External-agent
+# rows are keyed by tool name, not model (telemetry's "model" field becomes
+# the tool name on external_agents failover — see lib/agents.sh) — also
+# free (own subscriptions), listed for telemetry completeness.
+pricing:
+  "glm-5.3:cloud":             { input: 0.00, output: 0.00 }
+  "deepseek-v4.1-flash:cloud": { input: 0.00, output: 0.00 }
+  "kimi-k2.7-code:cloud":      { input: 0.00, output: 0.00 }
+  "granite4.1:8b":      { input: 0.00, output: 0.00 }
+  "qwen3.8:27b":        { input: 0.00, output: 0.00 }
+  "laguna-xs-2.1":      { input: 0.00, output: 0.00 }
+  "cursor-agent":       { input: 0.00, output: 0.00 }
+  "agy":                { input: 0.00, output: 0.00 }
+  "omp":                { input: 0.00, output: 0.00 }
+  "codex":              { input: 0.00, output: 0.00 }
+  "opencode":           { input: 0.00, output: 0.00 }
+  "kilo":               { input: 0.00, output: 0.00 }
+  "kiro-cli":           { input: 0.00, output: 0.00 }
