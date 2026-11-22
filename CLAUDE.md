@@ -89,6 +89,8 @@ Keep business logic out of `api`, because a stdio JSON-RPC transport is planned 
   - Run as UID 10001 with `read_only`, `cap_drop: ALL`, `no-new-privileges`, `pids_limit: 128`,
     `mem_limit: 1g` and `cpus: 2.0`.
   - Mount `/work` and `/tmp` as tmpfs; `/tmp` must allow exec.
+  - `/data` is the named volume `dreet-data`, not a bind mount, so UID 10001 owns it. `down -v` wipes
+    the history.
 - **Go version.** Go 1.26+ for the core and for card `go.mod` files.
 
 ## Verification (before reporting done)
