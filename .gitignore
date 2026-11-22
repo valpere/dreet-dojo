@@ -1,0 +1,16 @@
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data (SQLite)
+/data/
+
+# Build output
+/dreet
+/web/dist/
+/internal/web/dist/
+/web/node_modules/
+
+# Local scratch
+/tmp/
