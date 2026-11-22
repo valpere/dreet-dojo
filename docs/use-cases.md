@@ -172,14 +172,14 @@
 
 ---
 
-## Трасування UC → FR
+## Трасування UC → вимоги
 
 | UC | Вимоги |
 | :---- | :---- |
-| UC-01 | FR-01, FR-02, FR-04, FR-06, FR-12, FR-13, FR-15 |
-| UC-02 | FR-04, FR-05, FR-06, FR-08, FR-09, FR-10, FR-11, FR-12 |
-| UC-03 | FR-06, FR-11 |
-| UC-04 | FR-07, FR-11, FR-12 |
-| UC-05 | FR-04, FR-06, FR-07 |
-| UC-06 | FR-14 |
-| UC-07 | FR-01, FR-02, FR-03 |
+| UC-01 | REQ-FR-01, REQ-FR-02, REQ-FR-04, REQ-FR-06, REQ-FR-12, REQ-FR-13, REQ-FR-15, REQ-FR-16 |
+| UC-02 | REQ-FR-04, REQ-FR-05, REQ-FR-06, REQ-FR-08, REQ-FR-09, REQ-FR-10, REQ-FR-11, REQ-FR-12 |
+| UC-03 | REQ-FR-06, REQ-FR-11 |
+| UC-04 | REQ-FR-07, REQ-FR-11, REQ-FR-12, REQ-FR-16 |
+| UC-05 | REQ-FR-04, REQ-FR-06, REQ-FR-07 |
+| UC-06 | REQ-FR-14 |
+| UC-07 | REQ-FR-01, REQ-FR-02, REQ-FR-03 |

@@ -338,8 +338,8 @@ func ScheduleSM2(st CardState, g Grade, now time.Time, rnd func() float64) CardS
 | 4 Easy | `reps += 1` | `reps == 0` ⇒ 4.0; `reps == 1` ⇒ 6.0; інакше `I × EF × 1.3` | `min(3.0, EF + 0.15)` |
 
 Після таблиці застосовуються ще три правила:
-- `I = min(60.0, I)`.
 - Якщо `I >= 4.0`, то `I ×= 0.95 + 0.1 × rnd()`.
+- `I = min(60.0, I)`. Стеля застосовується **після** jitter, тож інтервал ніколи не перевищує 60 днів.
 - `due_at = now + I × 86400`, а `last_reviewed_at = now`.
 
 **Черга (`NextDue`).**
@@ -401,7 +401,8 @@ var (
 
 - Маршрутизація стандартним `http.ServeMux` з шаблонами `METHOD /path`.
 - Доменні помилки мапляться на HTTP **по ендпоінту** (таблиця в §5). Однакова помилка може давати різні коди залежно від ендпоінту, наприклад `ErrNoAttempt`: 204 для `current` і 404 для `diff`.
-- Тіло запиту обмежено `http.MaxBytesReader` до 256 КБ. Перевищення дає 400 `bad_request`.
+- Усе тіло запиту, разом з JSON-екрануванням і іншими полями, обмежено `http.MaxBytesReader` до 262144 байт. Перевищення дає 400 `bad_request`.
+- `internal/api` викликає лише `session.Service`. Імпортувати `srs` і `runner` дозволено тільки заради типів-значень (`srs.Stats`, `runner.Result`, `runner.Diagnostic`) і sentinel-помилок (`srs.ErrNoCardsDue`) для серіалізації й мапінгу кодів.
 - `internal/web`: шлях поза `/api/` віддає файл з `embed.FS`. Якщо файлу немає, віддається `index.html` (SPA fallback). Для `assets/*` з хешем у назві ставиться `Cache-Control: immutable`.
 
 ### 3.7 `web/` — стерильний редактор
@@ -427,7 +428,7 @@ var (
 3. Якщо попередня спроба не завершена, повертається `ErrAttemptInProgress` (409). Завершену спробу прибирає `sandbox.Cleanup(prev.WS)`.
 4. `sandbox.Prepare(card)` створює `/work/<session_id>`.
 5. Ініціалізується `Attempt{StartedAt: now}`.
-6. Відповідь: `{id, lang, title, format, prompt_md, code, target_sec, hints_total, started_at, srs_meta}`.
+6. Відповідь: CardView (§5).
 
 ### 4.2 Перевірка — `POST /api/attempt/run`
 
@@ -459,26 +460,88 @@ Web UI (Ctrl+S) ── POST {card_id, code} ──▶ api ──▶ session.Run
 
 ## 5. HTTP API
 
-Усі відповіді мають тип `application/json; charset=utf-8`. Формат помилки: `{"error": {"code": "<code>", "message": "<text>"}}`.
+Усі відповіді мають тип `application/json; charset=utf-8`. Неочікувані збої повертаються як 500 `internal`. Подробиці пишуться в журнал сервера, а не у відповідь.
 
 | Ендпоінт | Запит | 200 OK | Інші коди |
 | :---- | :---- | :---- | :---- |
-| `GET /api/health` | — | `{"status":"ok","langs":["go"]}` | — |
-| `GET /api/session/current` | — | як `session/next`, де `code` — поточний код із пісочниці, плюс `finished: bool` | 204 (`ErrNoAttempt`) |
-| `POST /api/session/next` | `{ahead?: bool}` | `{id, lang, title, format, prompt_md, code, target_sec, hints_total, started_at, srs_meta}` | 204 (`ErrNoCardsDue`), 409 `attempt_in_progress` |
-| `POST /api/attempt/run` | `{card_id, code}` | `{status, duration_ms, diagnostics[], raw_output, grade?, srs_next_days?}` | 400 `bad_request`, 409 `no_active_attempt` |
-| `POST /api/attempt/hint` | `{card_id}` | `{hint_index, hints_total, text}` (`hint_index` 1-based) | 404 `hints_exhausted`, 409 `no_active_attempt` |
-| `POST /api/attempt/giveup` | `{card_id}` | `{status:"giveup", grade:1, srs_next_days:1}` | 409 `no_active_attempt` |
-| `GET /api/attempt/diff` | `?card_id=…` | `{user_code, solution_code, unified_diff}` | 403 `solution_locked`, 404 `not_found` (`ErrNoAttempt`) |
-| `GET /api/stats` | — | `{due_today, reviewed_today, clean_compile_rate, weak_tags:[{tag, avg_grade, attempts}]}` | 500 `internal` |
+| `GET /api/health` | — | Health | — |
+| `GET /api/session/current` | — | CardView (`code` — поточний код із пісочниці) | 204 (`ErrNoAttempt`) |
+| `POST /api/session/next` | NextRequest | CardView | 204 (`ErrNoCardsDue`), 409 `attempt_in_progress` |
+| `POST /api/attempt/run` | RunRequest | RunResponse | 400 `bad_request`, 409 `no_active_attempt` |
+| `POST /api/attempt/hint` | CardRef | HintView | 404 `hints_exhausted`, 409 `no_active_attempt` |
+| `POST /api/attempt/giveup` | CardRef | GiveUpResponse | 409 `no_active_attempt` |
+| `GET /api/attempt/diff` | `?card_id=…` | DiffView | 403 `solution_locked`, 404 `not_found` (`ErrNoAttempt`) |
+| `GET /api/stats` | — | StatsView | 500 `internal` |
 
-Додаткові формати:
-- `srs_meta = {reps, lapses, ease_factor, interval_days, is_new}`.
-- `started_at` — RFC 3339.
-- `diagnostics[] = {file, line, col, severity, message}`.
-- `srs_next_days` — ціле число, округлене вгору.
+Схеми запитів і відповідей (CheckResult і Diagnostic визначено в requirements.md §0):
 
-Неочікувані збої повертаються як 500 `internal`. Подробиці пишуться в журнал сервера, а не у відповідь.
+@schema Error {
+  error: { code: Enum["bad_request","no_active_attempt","attempt_in_progress","solution_locked","hints_exhausted","not_found","internal"], message: String }
+}
+
+@schema Health {
+  status: "ok",
+  langs: [String] @constraint(rule: "runner.Registry.Langs()")
+}
+
+@schema NextRequest {
+  ahead: Bool? @constraint(default: false, rule: "Practice Ahead")
+}
+
+@schema CardRef {
+  card_id: String @constraint(required)
+}
+
+@schema RunRequest {
+  card_id: String @constraint(required),
+  code: String @constraint(required, rule: "whole JSON request body <= 262144 bytes (§3.6)")
+}
+
+@schema CardView {
+  id: String,
+  lang: String,
+  title: String,
+  format: Enum["cloze","spec","progressive","bugfix","skeleton"],
+  prompt_md: String,
+  code: String,
+  target_sec: Int,
+  hints_total: Int,
+  hints_used: Int,
+  started_at: String @constraint(format: "RFC 3339"),
+  finished: Bool,
+  srs_meta: { reps: Int, lapses: Int, ease_factor: Float, interval_days: Float, is_new: Bool }
+}
+
+@schema RunResponse {
+  ...CheckResult,
+  grade: Int? @constraint(range: [1, 4], rule: "only when status == pass"),
+  srs_next_days: Int? @constraint(rule: "ceil(interval_days); only when status == pass")
+}
+
+@schema HintView {
+  hint_index: Int @constraint(min: 1),
+  hints_total: Int,
+  text: String
+}
+
+@schema GiveUpResponse {
+  status: "giveup",
+  grade: 1,
+  srs_next_days: 1
+}
+
+@schema DiffView {
+  user_code: String,
+  solution_code: String,
+  unified_diff: String
+}
+
+@schema StatsView {
+  due_today: Int,
+  reviewed_today: Int,
+  clean_compile_rate: Float @constraint(range: [0, 1]),
+  weak_tags: [{ tag: String, avg_grade: Float, attempts: Int }] @constraint(max_items: 5, order: "avg_grade asc")
+}
 
 ## 6. Конфігурація `dreet serve`
 
@@ -501,21 +564,22 @@ Web UI (Ctrl+S) ── POST {card_id, code} ──▶ api ──▶ session.Run
 
 1. **Назви.** `drill-dojo`/`drill-engine` замінено на `dreet-dojo`/`dreet`, `go-fluency-01` — на `go-drills-01`, `/data/drill.db` — на `/data/dreet.db`.
 2. **Go 1.26** замість 1.24, згідно з конвенцією проєкту.
-3. **`GET /api/session/current` (FR-15).** У ТЗ кожен `session/next` прибирав попередню спробу. Тоді перезавантаження сторінки скидало б таймер, а це суперечить ADR-4.
+3. **`GET /api/session/current` (REQ-FR-15).** У ТЗ кожен `session/next` прибирав попередню спробу. Тоді перезавантаження сторінки скидало б таймер, а це суперечить ADR-4.
    - `session/next` тепер `POST`, бо має побічні ефекти (створює пісочницю й спробу).
    - Пропуску незавершеної спроби немає (409 `attempt_in_progress`). У ТЗ `next` мовчки викидав спробу, а детермінована черга одразу повертала ту саму картку з обнуленим таймером.
 4. **`giveup` замість `gave_up`** у відповіді API, щоб збігатися зі статусом у БД.
 5. **`Result.Duration`** у ТЗ мав тег `json:"duration_ms"` на `time.Duration`, а це серіалізувало б наносекунди. Тепер у DTO йде окреме поле `duration_ms` (int64).
-6. **Таймаут `go test -timeout`** проявляється як `panic: test timed out` з `Action: "fail"`. Його явно віднесено до `timeout` (пріоритет 1 у §3.3), інакше AC-4 не виконується.
+6. **Таймаут `go test -timeout`** проявляється як `panic: test timed out` з `Action: "fail"`. Його явно віднесено до `timeout` (пріоритет 1 у §3.3), інакше REQ-AC-4 не виконується.
 7. **`timeout` збільшує `test_fails`.** У ТЗ це не було визначено.
 8. **`DeckCardMeta`** у ТЗ згадувався, але не був визначений. Тепер визначений, а `NextDue` отримав `NextOptions`. Для карток, зниклих з диска, додано `card_state.active`.
 9. **Розблокування `prereq`** перевіряється наявністю спроби `pass`, а не `reps >= 1`. `reps` скидається після оцінки Again, тож прогресивний ланцюжок міг би заблокуватися назавжди.
 10. **`GOCACHE` на read-only rootfs** потребує записуваного тому (ADR-2).
 11. **`closeBrackets` заборонено** в редакторі як допомогу, що виходить за межі «стерильного» набору.
 12. **Уточнено переліки** сторонніх залежностей (YAML-парсер) і змінних оточення `GoRunner`.
-13. **Модель загроз.** ТЗ обіцяло, що код вправи не має доступу до еталона й мережі, але архітектура цього не забезпечувала. Тепер обмеження задокументовано явно (architecture.md §5.1, ADR-9), а формулювання FR-07, FR-08 і NFR-04 відповідають реальному захисту.
+13. **Модель загроз.** ТЗ обіцяло, що код вправи не має доступу до еталона й мережі, але архітектура цього не забезпечувала. Тепер обмеження задокументовано явно (architecture.md §5.1, ADR-9), а формулювання REQ-FR-07, REQ-FR-08 і REQ-NFR-04 відповідають реальному захисту.
 14. **`/data` — іменований том** `dreet-data`, а не bind-mount `./data`. Bind-mount належав би користувачу хоста або root, і UID 10001 не зміг би записати БД.
 15. **Межа доби — 00:00 UTC** для `NewPerDay`, `ReviewedToday` і `DueToday`.
+16. **Розмітка tumanomir.** Вимоги мають ID REQ-FR/NFR/CON/AC і трасування; модель даних і DTO описано через `@schema`. Додано вимогу REQ-FR-16 (заборона пропуску спроби), а в CardView — поле `hints_used`, бо без нього UI не відновить лічильник підказок після перезавантаження (REQ-FR-15).
 
 ## 8. Відкриті питання
 
