@@ -127,7 +127,7 @@ API_KEY="${!API_KEY_ENV:-}"
 # models on localhost without auth. rest_post omits the Authorization header when
 # the key is empty. The cloud probe below runs either way, so a daemon that cannot
 # reach the cloud is caught there instead of producing a silent "clean" review.
-[ -z "$API_KEY" ] && [ "$LOCAL_ONLY" != "true" ] && echo "note: no $API_KEY_ENV — using the signed-in local daemon for cloud models"
+[ -z "$API_KEY" ] && [ "$LOCAL_ONLY" != "true" ] && echo "note: no $API_KEY_ENV — using the signed-in local daemon for cloud models" >&2
 ```
 
 A missing key is not fatal (dreet-dojo deviation from canon, 2026-11-22): the
