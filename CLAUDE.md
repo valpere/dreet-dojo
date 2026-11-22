@@ -7,13 +7,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `docs/` is the spec, written in Ukrainian. Read the relevant doc before changing behaviour or contracts:
 
 - `docs/use-cases.md`: UC-01..07, including alternative flows and the HTTP codes each one returns.
-- `docs/requirements.md`: FR, NFR, constraints, out of scope, and acceptance criteria AC-1..5.
+- `docs/requirements.md`: data model (`@schema`), REQ-FR, REQ-NFR, REQ-CON and REQ-AC requirements in
+  tumanomir markup, plus out of scope.
 - `docs/architecture.md`: components, dependency direction, stack, deployment topology, and ADR-1..9.
 - `docs/hld.md`: module contracts (Go signatures), deck format, grading/SM-2/queue rules, flows, the
   HTTP API, `dreet serve` flags, deviations from the original ТЗ (§7), and open questions (§8).
 
 The original design conversation lives in `../context/` and is history only. Where it disagrees with
 `docs/`, `docs/` wins. When a change alters a contract, update `docs/` in the same PR.
+
+Markup rule: a bracketed `[REQ-…]` tag defines a requirement and needs a `-> [FUN|LOG|PHY-…]` trace before the next
+tag. Anywhere else, refer to a requirement without brackets (REQ-FR-07). tumanomir counts every bracketed tag as a
+new definition.
 
 Status: docs only, no code yet.
 
@@ -102,6 +107,7 @@ go vet ./... && go test -race ./...
 go test -race -run TestName ./internal/<pkg>/      # single test
 npm --prefix web run build && go build ./cmd/dreet # frontend must embed cleanly
 dreet validate --decks ./decks                     # required after any deck/card change
+tumanomir check docs/                              # required after any docs/ change: K_drift must stay [ok]
 docker compose up --build                          # after Dockerfile/compose changes; check GET /api/health
 ```
 
