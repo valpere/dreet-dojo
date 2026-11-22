@@ -25,7 +25,7 @@
 
 ## 0. Модель даних
 
-Це канонічна модель. Go-сигнатури, що її реалізують, наведено в hld.md §3, формати HTTP — у hld.md §5.
+Це канонічна **логічна** модель. Фізичні назви колонок SQLite наведено в hld.md §3.4 (наприклад, `tags` зберігається як `tags_json TEXT`). Go-типи можуть містити лише підмножину полів, потрібну конкретному пакету (hld.md §3). Формати HTTP описано в hld.md §5.
 
 @schema CardMeta {
   id: String @constraint(required, unique: "across all decks"),
@@ -65,6 +65,7 @@
 }
 
 @schema Attempt {
+  id: Int @constraint(primary_key, autoincrement),
   card_id: String @constraint(foreign_key: "CardState.card_id"),
   started_at: Timestamp,
   finished_at: Timestamp,
@@ -185,21 +186,21 @@
 ### Розширюваність
 
 22. [REQ-NFR-06] Нова мова (Python, Rust, TypeScript) не потребує змін у `srs`, `sandbox`, `api`, `session` чи схемі БД. Досить нової реалізації `Runner` і відповідного runtime-образу.
-    -> [LOG-NFR-06] runner.Registry з ключем CardMeta.lang; session звертається лише до інтерфейсу runner.Runner; srs, sandbox і api не імпортують runner
+    -> [LOG-NFR-06] runner.Registry з ключем CardMeta.lang; session звертається лише до інтерфейсу runner.Runner; srs і sandbox не імпортують runner; api імпортує з runner лише типи-значення Result і Diagnostic
 23. [REQ-NFR-07] Бізнес-логіка не прив'язана до HTTP. Поверх тих самих сервісів можна додати stdio JSON-RPC транспорт для плагінів редакторів (VS Code, Lite XL) без дублювання логіки.
-    -> [LOG-NFR-07] internal/api з пакетів internal/* імпортує лише session
+    -> [LOG-NFR-07] internal/api викликає лише session.Service і не викликає deck, srs, sandbox чи runner; з srs і runner бере тільки типи-значення та sentinel-помилки (hld.md §3.6)
 
 ### Підтримуваність
 
 24. [REQ-NFR-08] Бінарник `dreet` компілюється з `CGO_ENABLED=0`, SQLite підключено через pure-Go `modernc.org/sqlite`. HTTP працює на stdlib `net/http`, без веб-фреймворків. Кожна стороння залежність має письмове обґрунтування, чому stdlib не вистачає (architecture.md §4).
-    -> [PHY-NFR-08] go.mod має рівно дві зовнішні залежності: modernc.org/sqlite і go.yaml.in/yaml/v3; Dockerfile, стадія builder: `CGO_ENABLED=0 go build ./cmd/dreet`
+    -> [PHY-NFR-08] go.mod має рівно дві прямі (не `// indirect`) залежності: modernc.org/sqlite і go.yaml.in/yaml/v3; Dockerfile, стадія builder: `CGO_ENABLED=0 go build ./cmd/dreet`
 
 ## 3. Обмеження
 
 25. [REQ-CON-01] Go **1.26+** для ядра і для `go.mod` карток.
     -> [PHY-CON-01] `go 1.26` у go.mod репозиторію і в go.mod кожної картки (перевіряє `dreet validate`)
 26. [REQ-CON-02] Runtime-образ на Debian/glibc (`golang:1.26-bookworm` або новіший Debian-тег). **Alpine заборонено**, бо `-race` потребує glibc і CGO під час прогону тестів.
-    -> [PHY-CON-02] Dockerfile: `FROM golang:1.26-bookworm` для стадій builder і runtime-go
+    -> [PHY-CON-02] Dockerfile: стадії builder і runtime-go мають базу `golang:<1.26+>-<debian-tag>` (bookworm, trixie…), а не `-alpine`
 27. [REQ-CON-03] Фронтенд: TypeScript, Vite і CodeMirror 6. Важких UI-фреймворків (React, Angular, MUI) немає. Бандл вшивається в бінарник через `//go:embed`.
     -> [PHY-CON-03] web/package.json має залежності лише vite, typescript, @codemirror/*; internal/web містить `//go:embed dist/*`
 28. [REQ-CON-04] Вправи MVP спираються лише на стандартну бібліотеку. Під час перевірки мережа не потрібна.
@@ -218,7 +219,7 @@
 ## 5. Критерії приймання MVP
 
 29. [REQ-AC-1] `docker compose up --build` піднімає контейнер на `127.0.0.1:8787` з усіма налаштуваннями REQ-NFR-03, а `GET /api/health` повертає `200`.
-    -> [PHY-AC-1] `docker compose up -d --build && curl -fsS http://127.0.0.1:8787/api/health`; `docker inspect dreet` показує ReadonlyRootfs=true, CapDrop=[ALL], User=10001
+    -> [PHY-AC-1] `docker compose up -d --build && curl -fsS http://127.0.0.1:8787/api/health`; `docker inspect $(docker compose ps -q dreet)` показує ReadonlyRootfs=true, CapDrop=[ALL], User=10001
 30. [REQ-AC-2] `dreet validate --decks /app/decks` проходить без помилок для стартової колоди `go-drills-01` з 15 Go-вправ.
     -> [PHY-AC-2] `docker compose exec dreet dreet validate --decks /app/decks` завершується з кодом 0, у звіті 15 валідних карток
 31. [REQ-AC-3] У редакторі повністю відсутні автодоповнення, підказки сигнатур і AI-доповнення. `Ctrl+S` проганяє `go test -race` і показує інлайн-діагностики або зелене проходження. На типовій картці це займає **≤ 500 мс** (медіана).

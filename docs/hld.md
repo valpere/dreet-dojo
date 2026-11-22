@@ -338,8 +338,8 @@ func ScheduleSM2(st CardState, g Grade, now time.Time, rnd func() float64) CardS
 | 4 Easy | `reps += 1` | `reps == 0` ⇒ 4.0; `reps == 1` ⇒ 6.0; інакше `I × EF × 1.3` | `min(3.0, EF + 0.15)` |
 
 Після таблиці застосовуються ще три правила:
-- `I = min(60.0, I)`.
 - Якщо `I >= 4.0`, то `I ×= 0.95 + 0.1 × rnd()`.
+- `I = min(60.0, I)`. Стеля застосовується **після** jitter, тож інтервал ніколи не перевищує 60 днів.
 - `due_at = now + I × 86400`, а `last_reviewed_at = now`.
 
 **Черга (`NextDue`).**
@@ -401,7 +401,8 @@ var (
 
 - Маршрутизація стандартним `http.ServeMux` з шаблонами `METHOD /path`.
 - Доменні помилки мапляться на HTTP **по ендпоінту** (таблиця в §5). Однакова помилка може давати різні коди залежно від ендпоінту, наприклад `ErrNoAttempt`: 204 для `current` і 404 для `diff`.
-- Тіло запиту обмежено `http.MaxBytesReader` до 256 КБ. Перевищення дає 400 `bad_request`.
+- Усе тіло запиту, разом з JSON-екрануванням і іншими полями, обмежено `http.MaxBytesReader` до 262144 байт. Перевищення дає 400 `bad_request`.
+- `internal/api` викликає лише `session.Service`. Імпортувати `srs` і `runner` дозволено тільки заради типів-значень (`srs.Stats`, `runner.Result`, `runner.Diagnostic`) і sentinel-помилок (`srs.ErrNoCardsDue`) для серіалізації й мапінгу кодів.
 - `internal/web`: шлях поза `/api/` віддає файл з `embed.FS`. Якщо файлу немає, віддається `index.html` (SPA fallback). Для `assets/*` з хешем у назві ставиться `Cache-Control: immutable`.
 
 ### 3.7 `web/` — стерильний редактор
@@ -427,7 +428,7 @@ var (
 3. Якщо попередня спроба не завершена, повертається `ErrAttemptInProgress` (409). Завершену спробу прибирає `sandbox.Cleanup(prev.WS)`.
 4. `sandbox.Prepare(card)` створює `/work/<session_id>`.
 5. Ініціалізується `Attempt{StartedAt: now}`.
-6. Відповідь: `{id, lang, title, format, prompt_md, code, target_sec, hints_total, started_at, srs_meta}`.
+6. Відповідь: CardView (§5).
 
 ### 4.2 Перевірка — `POST /api/attempt/run`
 
@@ -493,7 +494,7 @@ Web UI (Ctrl+S) ── POST {card_id, code} ──▶ api ──▶ session.Run
 
 @schema RunRequest {
   card_id: String @constraint(required),
-  code: String @constraint(required, max_bytes: 262144)
+  code: String @constraint(required, rule: "whole JSON request body <= 262144 bytes (§3.6)")
 }
 
 @schema CardView {
