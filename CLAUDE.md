@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - `docs/use-cases.md`: UC-01..07, including alternative flows and the HTTP codes each one returns.
 - `docs/requirements.md`: FR, NFR, constraints, out of scope, and acceptance criteria AC-1..5.
-- `docs/architecture.md`: components, dependency direction, stack, deployment topology, and ADR-1..8.
+- `docs/architecture.md`: components, dependency direction, stack, deployment topology, and ADR-1..9.
 - `docs/hld.md`: module contracts (Go signatures), deck format, grading/SM-2/queue rules, flows, the
   HTTP API, `dreet serve` flags, deviations from the original ТЗ (§7), and open questions (§8).
 
@@ -76,6 +76,9 @@ Keep business logic out of `api`, because a stdio JSON-RPC transport is planned 
   - Keys: `Ctrl+S` run, `Alt+H` hint, `Alt+D` diff, `Alt+N` next.
 - **Solution stays locked.** `solution.go` is never copied into `/work`, and is never returned by the
   API before the attempt ends in `pass` or `giveup` (403 until then).
+- **Threat model: honest user** (`docs/architecture.md` §5.1, ADR-9). Exercise code runs in the same
+  container and as the same UID as `dreet`. Never claim isolation of solutions, the DB or the network
+  from exercise code in the docs or the code.
 - **Binary build.** `dreet` is built with `CGO_ENABLED=0`, with SQLite from `modernc.org/sqlite`.
   Routing is stdlib `net/http` only. Any new third-party Go dependency needs a justification row in
   `docs/architecture.md`.
