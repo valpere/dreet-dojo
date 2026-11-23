@@ -36,14 +36,14 @@
   order: Int @constraint(default: 0),
   target_sec: Int @constraint(required, min: 1),
   tags: [String] @constraint(default: []),
-  entry_file: String @constraint(default: "kata.go", rule: "bare file name; no path separators, no '..', not *_test.go"),
+  entry_file: String @constraint(default: "kata.go", rule: "bare file name ending in .go; no path separators, no '..'; not *_test.go, not solution.go"),
   hints: [String] @constraint(default: [], rule: "served in order, one per request")
 }
 
 @schema CardFiles {
   meta: "meta.yaml" @constraint(required),
   prompt: "prompt.md" @constraint(required),
-  module: "go.mod" @constraint(required, rule: "module kata; go 1.26"),
+  module: "go.mod" @constraint(required, rule: "exactly 'module kata' and a 'go 1.26' (or newer) directive; no require, replace or toolchain"),
   stub: "<entry_file>" @constraint(required, rule: "must fail its tests"),
   tests: "*_test.go" @constraint(required, min: 1, rule: "read-only in the sandbox"),
   solution: "solution.go" @constraint(required, rule: "must pass under -race; never copied into /work")
@@ -69,7 +69,7 @@
   card_id: String @constraint(foreign_key: "CardState.card_id"),
   started_at: Timestamp,
   finished_at: Timestamp,
-  elapsed_sec: Int @constraint(min: 0),
+  elapsed_sec: Int @constraint(min: 0, rule: "floor(finished_at - started_at) in seconds, computed by srs.RecordAttempt"),
   target_sec: Int @constraint(min: 1),
   compile_errors: Int @constraint(min: 0),
   test_fails: Int @constraint(min: 0, rule: "timeout also increments"),
@@ -82,11 +82,11 @@
   status: Enum["pass","compile_error","test_fail","timeout"],
   duration_ms: Int @constraint(min: 0),
   diagnostics: [Diagnostic],
-  raw_output: String @constraint(max_bytes: 65536)
+  raw_output: String @constraint(max_bytes: 65536, rule: "concatenated Output fields of the go test -json events; when longer, keep the tail")
 }
 
 @schema Diagnostic {
-  file: String @constraint(rule: "relative to the sandbox dir"),
+  file: String @constraint(rule: "relative to the sandbox dir: the workDir prefix and a leading './' are stripped"),
   line: Int @constraint(min: 1),
   col: Int @constraint(min: 0, rule: "0 = unknown"),
   severity: Enum["error","warning"],
@@ -110,9 +110,12 @@
 3. [REQ-FR-03] Команда `dreet validate` гарантує інваріант кожної картки:
    - стаб не проходить тести;
    - еталон проходить тести під `-race` без гонок і попереджень;
-   - граф `prereq` коректний: посилання ведуть на наявні картки, циклів немає.
+   - граф `prereq` коректний: посилання ведуть на наявні картки, циклів немає;
+   - `go.mod` має вигляд `module kata` + `go 1.26`, без `require`, `replace` і `toolchain`.
 
-   -> [FUN-FR-03] `dreet validate --decks <dir>` у cmd/dreet із кодами виходу 0 (все валідне), 1 (є невалідні картки), 2 (збій інфраструктури)
+   `serve` поведінкових перевірок не робить: прогнати `dreet validate` після зміни картки — обов’язок автора.
+
+   -> [FUN-FR-03] `dreet validate --decks <dir>` у cmd/dreet із кодами виходу 0 (все валідне), 1 (є невалідні картки або не знайдено жодної), 2 (збій інфраструктури)
 
 ### Стерильний редактор і UX одного вікна
 
@@ -131,11 +134,11 @@
 ### Виконання коду та діагностика
 
 8. [REQ-FR-08] Go-вправу перевіряє реальний компілятор командою `go test -race -json -count=1 -timeout=5s ./...` в ізольованій тимчасовій директорії, без завантаження модулів (`GOPROXY=off`). Мережеву ізоляцію коду вправи MVP не гарантує (architecture.md §5.1).
-   -> [FUN-FR-08] runner.GoRunner.Check(ctx context.Context, workDir string) (runner.Result, error) з оточенням GOPROXY=off, GOTOOLCHAIN=local
+   -> [FUN-FR-08] runner.GoRunner.Check(ctx context.Context, workDir string) (runner.Result, error) з оточенням GOPROXY=off, GOTOOLCHAIN=local, GORACE=atexit_sleep_ms=0
 9. [REQ-FR-09] Ядро розрізняє 4 статуси перевірки (`pass`, `compile_error`, `test_fail`, `timeout`). Воно повертає масив структурованих діагностик (Diagnostic), щоб показати їх у рядках редактора.
    -> [FUN-FR-09] runner.Status, runner.Diagnostic, runner.Result; пріоритети визначення статусу наведено в hld.md §3.3
-10. [REQ-FR-10] Коли спрацьовує таймаут, система примусово знищує процес разом із групою дочірніх процесів (PGID). Завислих або зомбі-процесів не лишається.
-    -> [LOG-FR-10] GoRunner: SysProcAttr{Setpgid: true}; коли контекст скасовано, syscall.Kill(-pgid, SIGKILL), потім cmd.Wait
+10. [REQ-FR-10] Коли спрацьовує таймаут, система примусово знищує процес разом із групою дочірніх процесів (PGID). Завислих або зомбі-процесів не лишається, навіть якщо `go test -timeout` завершив процес раніше за дедлайн контексту.
+    -> [LOG-FR-10] GoRunner: SysProcAttr{Setpgid: true}; коли контекст скасовано, syscall.Kill(-pgid, SIGKILL); після кожного cmd.Wait ще раз syscall.Kill(-pgid, SIGKILL) з ігноруванням ESRCH
 
 ### Інтервальне повторення (SRS) та телеметрія
 
@@ -152,12 +155,14 @@
     -> [FUN-FR-13] srs.Store.NextDue(ctx, now time.Time, opts srs.NextOptions) (srs.CardState, error), прапорець `dreet serve --new-per-day`
 14. [REQ-FR-14] Статистика за 30 днів:
     - черга на сьогодні;
-    - скільки карток пройдено сьогодні;
-    - частка спроб без жодної помилки компіляції;
+    - скільки різних карток опрацьовано сьогодні (`pass` або `giveup`);
+    - частка спроб без жодної помилки компіляції (0, якщо спроб немає);
     - топ слабких тегів за середньою оцінкою.
 
-    -> [FUN-FR-14] srs.Store.Stats(ctx, now time.Time) (srs.Stats, error), GET /api/stats
-15. [REQ-FR-15] Активна спроба відновлюється після перезавантаження сторінки. Таймер і лічильники при цьому не скидаються, а UI отримує поточний код із пісочниці.
+    Точні визначення агрегатів наведено в hld.md §3.4.
+
+    -> [FUN-FR-14] srs.Store.Stats(ctx, now time.Time, newPerDay int) (srs.Stats, error), GET /api/stats
+15. [REQ-FR-15] Активна спроба відновлюється після перезавантаження сторінки. Таймер і лічильники при цьому не скидаються, а UI отримує поточний код із пісочниці й тексти вже показаних підказок. Щойно завершена спроба теж відновлюється разом з оцінкою, і наступна картка не видається, доки користувач не натисне `Alt+N`.
     -> [FUN-FR-15] session.Service.Current(ctx) (CardView, error), GET /api/session/current
 16. [REQ-FR-16] Пропустити незавершену спробу не можна. Щоб перейти до наступної картки, спробу треба пройти (`pass`) або здати (`giveup`). Так `Alt+N` не скидає таймер і не дає обійти оцінку.
     -> [FUN-FR-16] session.Service.Next повертає ErrAttemptInProgress → 409 `attempt_in_progress`; ендпоінт POST /api/attempt/giveup
@@ -166,8 +171,8 @@
 
 ### Швидкодія
 
-17. [REQ-NFR-01] Медіанний час `POST /api/attempt/run` для типової Go-вправи з `-race` — **≤ 500 мс**. Це досягається прогрітим `GOCACHE` і tmpfs для `/work` та `/tmp`.
-    -> [PHY-NFR-01] вимір у межах REQ-AC-3: медіана `duration_ms` за 20 послідовних прогонів однієї картки в контейнері
+17. [REQ-NFR-01] Медіанний час `POST /api/attempt/run` для типової Go-вправи з `-race` — **≤ 500 мс**. Це досягається прогрітим `GOCACHE`, tmpfs для `/work` та `/tmp` і `GORACE=atexit_sleep_ms=0`: без нього race-детектор чекає 1 с перед виходом тестового процесу. Це ціль, яку ще треба підтвердити виміром (ADR-2); якщо вона недосяжна, поріг переглядається тут, а не обходиться.
+    -> [PHY-NFR-01] вимір у межах REQ-AC-3: медіана повного часу HTTP-запиту за 20 послідовних прогонів одного коду зі статусом `test_fail` (спроба лишається активною) на картці `go-01`, перший прогін не враховується
 18. [REQ-NFR-02] Холодний старт контейнера до готовності HTTP — **≤ 2 с**. JS-бандл фронтенду — **≤ 500 КБ** у gzip.
     -> [PHY-NFR-02] час від `docker compose up` до першої відповіді 200 від GET /api/health; `gzip -c web/dist/assets/*.js | wc -c` ≤ 512000
 
@@ -185,7 +190,7 @@
 
 ### Розширюваність
 
-22. [REQ-NFR-06] Нова мова (Python, Rust, TypeScript) не потребує змін у `srs`, `sandbox`, `api`, `session` чи схемі БД. Досить нової реалізації `Runner` і відповідного runtime-образу.
+22. [REQ-NFR-06] Нова мова (Python, Rust, TypeScript) не потребує змін у `srs`, `api`, `session` чи схемі БД. Потрібні нова реалізація `Runner`, runtime-образ і правила файлів картки для цієї мови в `deck` і `sandbox`: формат картки MVP — Go-специфічний (`go.mod`, `*_test.go`), і універсалізувати його наперед у v1 не треба.
     -> [LOG-NFR-06] runner.Registry з ключем CardMeta.lang; session звертається лише до інтерфейсу runner.Runner; srs і sandbox не імпортують runner; api імпортує з runner лише типи-значення Result і Diagnostic
 23. [REQ-NFR-07] Бізнес-логіка не прив'язана до HTTP. Поверх тих самих сервісів можна додати stdio JSON-RPC транспорт для плагінів редакторів (VS Code, Lite XL) без дублювання логіки.
     -> [LOG-NFR-07] internal/api викликає лише session.Service і не викликає deck, srs, sandbox чи runner; з srs і runner бере тільки типи-значення та sentinel-помилки (hld.md §3.6)
@@ -204,7 +209,7 @@
 27. [REQ-CON-03] Фронтенд: TypeScript, Vite і CodeMirror 6. Важких UI-фреймворків (React, Angular, MUI) немає. Бандл вшивається в бінарник через `//go:embed`.
     -> [PHY-CON-03] web/package.json має залежності лише vite, typescript, @codemirror/*; internal/web містить `//go:embed dist/*`
 28. [REQ-CON-04] Вправи MVP спираються лише на стандартну бібліотеку. Під час перевірки мережа не потрібна.
-    -> [LOG-CON-04] `dreet validate` і GoRunner запускаються з GOPROXY=off, тож картка з не-stdlib імпортом не проходить валідацію
+    -> [LOG-CON-04] `dreet validate` відхиляє `go.mod` з `require`, `replace` або `toolchain`, тож не-stdlib імпорт не компілюється; GoRunner додатково запускається з GOPROXY=off
 
 ## 4. Межі MVP (Out of Scope для v1.0)
 
@@ -222,8 +227,8 @@
     -> [PHY-AC-1] `docker compose up -d --build && curl -fsS http://127.0.0.1:8787/api/health`; `docker inspect $(docker compose ps -q dreet)` показує ReadonlyRootfs=true, CapDrop=[ALL], User=10001
 30. [REQ-AC-2] `dreet validate --decks /app/decks` проходить без помилок для стартової колоди `go-drills-01` з 15 Go-вправ.
     -> [PHY-AC-2] `docker compose exec dreet dreet validate --decks /app/decks` завершується з кодом 0, у звіті 15 валідних карток
-31. [REQ-AC-3] У редакторі повністю відсутні автодоповнення, підказки сигнатур і AI-доповнення. `Ctrl+S` проганяє `go test -race` і показує інлайн-діагностики або зелене проходження. На типовій картці це займає **≤ 500 мс** (медіана).
-    -> [PHY-AC-3] ручна перевірка в `chromium --app=http://127.0.0.1:8787`: під час набору не з'являється жодне спливне вікно; час вимірюється за PHY-NFR-01
+31. [REQ-AC-3] У редакторі повністю відсутні автодоповнення, підказки сигнатур і AI-доповнення. `Ctrl+S` проганяє `go test -race` і показує інлайн-діагностики або зелене проходження. На типовій картці це займає **≤ 500 мс** (медіана, REQ-NFR-01).
+    -> [PHY-AC-3] ручна перевірка в `chromium --app=http://127.0.0.1:8787` на картці `go-01`: під час набору не з'являється жодне спливне вікно; час вимірюється за PHY-NFR-01
 32. [REQ-AC-4] Нескінченний цикл у коді вправи переривається приблизно через 5 с зі статусом `timeout`. Після цього `ps aux` у контейнері не показує завислих процесів.
     -> [PHY-AC-4] `for {}` у kata.go → POST /api/attempt/run повертає `status: "timeout"`; потім `docker compose exec dreet ps aux` не містить процесів `go` / `*.test`
 33. [REQ-AC-5] Ланцюжок прогресивної кати (go-05 → go-06 → go-07) проходить коректно:
@@ -231,4 +236,6 @@
     - історія зберігається після перезапуску контейнера;
     - side-by-side diff з `solution.go` відображається правильно.
 
-    -> [PHY-AC-5] сценарій: `pass` go-05 → наступною видається go-06; `docker compose restart` → GET /api/stats показує ту саму історію; після `pass` за `Alt+D` відкривається MergeView
+    -> [PHY-AC-5] інтеграційний тест `session` на чистій БД з колодою лише з go-05..07 і `--new-per-day 3`: до `pass` go-05 `next` не видає go-06; після `pass` go-05 наступною видається go-06; після перезапуску сервера на тому самому томі `reviewed_today` у GET /api/stats той самий; після `pass` GET /api/attempt/diff повертає 200, а за `Alt+D` відкривається MergeView
+34. [REQ-AC-6] Оцінка й планування SRS відповідають таблицям hld.md §3.4: кожен рядок таблиці оцінок, кожен рядок таблиці SM-2, межі EF, стеля 60 днів після jitter, денний ліміт нових карток і межа доби 00:00 UTC.
+    -> [PHY-AC-6] табличні тести `go test -race ./internal/srs/` з фіксованими `now` і `rnd`: один випадок на кожен рядок обох таблиць плюс граничні значення EF, інтервалу й межі доби
