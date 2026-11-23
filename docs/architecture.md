@@ -56,7 +56,7 @@ deck, srs, runner                              — листові пакети, 
 | `internal/session` | Життєвий цикл активної спроби: таймер, лічильники, розблокування еталона. Тут працюють доменні правила, що зачіпають кілька модулів. |
 | `internal/deck` | Читання каталогу колод (read-only), парсинг `meta.yaml`, валідація структури й графа `prereq`. |
 | `internal/srs` | SQLite-сховище (`card_state`, `attempts`), чистий планувальник (`EvaluateGrade`, `ScheduleSM2`), черга, статистика. |
-| `internal/sandbox` | Робочі директорії `/work/<session_id>`, безпечний запис файлу вправи, unified diff, прибирання. |
+| `internal/sandbox` | Робочі директорії `/work/<session_id>`, безпечний запис і читання файлу вправи, прибирання. |
 | `internal/runner` | Інтерфейс `Runner`, реєстр за `lang`, `GoRunner` поверх `go test -race -json`. |
 | `internal/mock` | Фейки `runner`, `srs` і `sandbox` для `--mock`. Вони дають перевірити API і Docker від початку до кінця до появи справжніх реалізацій. |
 | `web/` | Фронтенд: Vite, TypeScript і CodeMirror 6 у стерильній конфігурації. |
@@ -79,7 +79,7 @@ deck, srs, runner                              — листові пакети, 
 | `modernc.org/sqlite` | У stdlib немає драйвера SQLite. Pure-Go варіант зберігає `CGO_ENABLED=0`. |
 | YAML-парсер (`go.yaml.in/yaml/v3`) | У stdlib немає YAML, а `meta.yaml` — формат колод, зафіксований у ТЗ. |
 
-Unified diff пишемо самі в `internal/sandbox`. Пакет diff у stdlib (`internal/diff`) не експортується, а окрема бібліотека заради однієї функції не потрібна.
+Серверного diff немає: API віддає обидва тексти, а різницю показує `@codemirror/merge` на клієнті.
 
 ## 5. Топологія розгортання
 
@@ -89,7 +89,8 @@ Unified diff пишемо самі в `internal/sandbox`. Пакет diff у std
 3. `runtime-go` (`golang:1.26-bookworm`):
    - створює користувача `dreet` (UID 10001);
    - створює `/data` і `/var/cache/go-build` з власником `dreet`, щоб іменовані томи успадкували ці права;
-   - прогріває `GOCACHE=/var/cache/go-build` прогоном `go test -race` по ключових пакетах stdlib;
+   - задає `ENV GOCACHE=/var/cache/go-build GOTMPDIR=/tmp`;
+   - уже від `USER dreet` прогріває кеш командою `CGO_ENABLED=1 go build -race std`, щоб файли кешу належали UID 10001;
    - копіює бінарник `dreet` і колоди.
 
 **Контейнер (docker-compose.yml):**
@@ -97,11 +98,11 @@ Unified diff пишемо самі в `internal/sandbox`. Пакет diff у std
 | Ресурс | Налаштування |
 | :---- | :---- |
 | Порт | `127.0.0.1:8787:8787`, лише loopback хоста. Усередині контейнера сервер слухає `0.0.0.0:8787`. |
-| `/data` | Іменований том `dreet-data`, тут SQLite `dreet.db` разом із `-wal` і `-shm`. Docker при першому підключенні копіює в порожній том вміст і власника `/data` з образу (UID 10001), тож налаштовувати права на хості не треба. Бекап: `docker compose cp dreet:/data/dreet.db .`. **Увага:** `docker compose down -v` видаляє том разом з історією. |
+| `/data` | Іменований том `dreet-data`, тут SQLite `dreet.db` разом із `-wal` і `-shm`. Docker при першому підключенні копіює в порожній том вміст і власника `/data` з образу (UID 10001), тож налаштовувати права на хості не треба. Бекап: `docker compose stop dreet && docker compose cp dreet:/data/dreet.db . && docker compose start dreet`. Копіювати лише зупинений сервер: на ходу частина зафіксованих транзакцій лежить у `-wal`, а після коректної зупинки (`Store.Close`) вона вже перенесена в `dreet.db`. **Увага:** `docker compose down -v` видаляє том разом з історією. |
 | `/app/decks` | Bind-mount `./decks` у режимі `ro`, тож зміни підхоплюються без перезбирання. |
 | `/work` | `tmpfs`, `size=128m,mode=1777`. Робочі директорії сесій у RAM. |
-| `/tmp` | `tmpfs`, `size=128m,mode=1777`, **без `noexec`**. Тут `go test` збирає й запускає тестовий бінарник (`GOTMPDIR`). |
-| `GOCACHE` | Записуваний іменований том, ініціалізований з прогрітого вмісту образу (див. ADR-2). |
+| `/tmp` | `tmpfs` з опціями `exec,size=128m,mode=1777`. Docker за замовчуванням монтує tmpfs з `noexec`, тому `exec` треба задати явно: тут `go test` збирає й запускає тестовий бінарник (`GOTMPDIR`). |
+| `GOCACHE` | Записуваний іменований том `dreet-gocache`, ініціалізований з прогрітого вмісту образу (див. ADR-2). |
 | Безпека | `user: 10001`, `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `pids_limit: 128`, `mem_limit: 1g`, `cpus: 2.0`. |
 
 Повністю вимкнути мережу контейнера (`--network none`) не можна, бо він сам віддає Web UI. Ізоляцію дають loopback-прив'язка, read-only rootfs, обмеження ресурсів і `GOPROXY=off`.
@@ -133,8 +134,8 @@ DreetDojo — однокористувацький тренажер, де люд
 
 - **Нові мови (REQ-NFR-06).**
   - Поле `lang` у `meta.yaml` обирає `Runner` з реєстру.
-  - Нова мова — це одна реалізація `Runner`, наприклад `pytest --json-report` або `cargo test --message-format=json`, плюс стадія `runtime-<lang>` у Dockerfile.
-  - `srs`, `sandbox`, `session`, `api` і схема БД при цьому не змінюються.
+  - Нова мова — це одна реалізація `Runner`, наприклад `pytest --json-report` або `cargo test --message-format=json`, плюс стадія `runtime-<lang>` у Dockerfile і правила файлів картки цієї мови в `deck` та `sandbox`.
+  - `srs`, `session`, `api` і схема БД при цьому не змінюються. Формат картки MVP навмисно Go-специфічний.
 - **Альтернативні клієнти (REQ-NFR-07).** Логіка спроби живе в `session`, а не в HTTP. Тому stdio JSON-RPC (NDJSON) транспорт для плагінів VS Code / Lite XL додається як ще один адаптер поруч з `api`.
 - **Інший планувальник.** `EvaluateGrade` і `ScheduleSM2` — чисті функції без БД, тож перехід на FSRS зачіпає лише `internal/srs`.
 
@@ -146,7 +147,8 @@ DreetDojo — однокористувацький тренажер, де люд
 2. **ADR-2. Прогрітий `GOCACHE` і tmpfs для `/work` та `/tmp`.**
    - Без попередньої компіляції stdlib з `-race` перший прогін триває 4–6 с. Прогрів під час `docker build` і виконання в RAM скорочують цикл до 200–400 мс.
    - Go **записує** в `GOCACHE` під час кожної збірки, тому каталог кешу має бути записуваним попри `read_only: true`.
-   - Рішення: іменований том Docker, змонтований у `/var/cache/go-build`. Порожній іменований том Docker при першому підключенні наповнює вмістом образу.
+   - Рішення: іменований том Docker `dreet-gocache`, змонтований у `/var/cache/go-build`. Порожній іменований том Docker при першому підключенні наповнює вмістом образу.
+   - Непорожній том образ більше не оновлює. Після оновлення Go в образі кеш треба прогріти наново: `docker compose down && docker volume rm <project>_dreet-gocache && docker compose up -d`. Том `dreet-data` при цьому лишається, на відміну від `down -v`.
    - *Перевірити на REQ-AC-1/REQ-AC-3*, це ще не підтверджено прогоном.
 3. **ADR-3. Оркестратор сесії окремо від HTTP-транспорту.** Життєвий цикл спроби повністю живе в `session`, тож інші транспорти додаються без дублювання логіки (REQ-NFR-07).
 4. **ADR-4. Стан активної спроби на сервері.**

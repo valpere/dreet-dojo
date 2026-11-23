@@ -14,7 +14,7 @@ dreet-dojo/
 │   ├── deck/             # завантаження і валідація карток
 │   ├── session/          # оркестратор активної спроби
 │   ├── runner/           # Runner, Registry, GoRunner
-│   ├── sandbox/          # /work/<session_id>, запис коду, unified diff
+│   ├── sandbox/          # /work/<session_id>, запис і читання коду
 │   ├── srs/              # schema.sql, Store, scheduler.go
 │   ├── mock/             # фейки runner/srs/sandbox для --mock
 │   └── web/              # //go:embed dist/* + SPA fallback
@@ -61,18 +61,20 @@ hints:                    # 0..N, видаються по черзі
 ### 2.3 Правила валідації (`deck.Validate`, `dreet validate`)
 
 **Структурні.** Їх виконує `LoadAll` під час кожного завантаження.
+0. Розкладка рівно `<decks>/<deck_id>/<картка>/`: директорія картки — це директорія з `meta.yaml` на другому рівні. Інша вкладеність не підтримується.
 1. Обов'язкові файли на місці: `meta.yaml`, `prompt.md`, `go.mod`, `<entry_file>`, щонайменше один `*_test.go`, `solution.go`.
 2. `id`, `lang`, `title`, `format` і `target_sec` задані. `format` належить до переліку, а `target_sec > 0`.
 3. `id` унікальні в межах усіх колод.
-4. `entry_file` — це ім'я файлу без розділювачів шляху, без `..` і не `*_test.go`.
+4. `entry_file` — це ім'я файлу із суфіксом `.go`, без розділювачів шляху, без `..`, не `*_test.go` і не `solution.go`.
 5. `prereq` посилається на наявну картку, а граф `prereq` не має циклів.
 6. `lang` зареєстровано в `runner.Registry`. Цю перевірку робить `cmd/dreet`, бо `deck` не залежить від `runner`.
+7. `go.mod` містить лише `module kata` і директиву `go 1.26` (або новішу). `require`, `replace` і `toolchain` заборонені: вправи MVP спираються лише на stdlib (REQ-CON-04).
 
 **Поведінкові.** Тільки `dreet validate`. Кожна перевірка йде в окремій тимчасовій директорії поза `/work`.
 1. Стаб, тобто `<entry_file>` разом із тестами, не проходить. Статус має бути `test_fail` або `compile_error`.
 2. Еталон, тобто `solution.go`, скопійований як `entry_file`, разом із тестами дає статус `pass`. Гонок і попереджень при цьому немає.
 
-Невалідна картка в режимі `serve` журналюється і виключається з видачі. Сервер через неї не падає.
+Невалідна картка в режимі `serve` журналюється і виключається з видачі. Сервер через неї не падає. Поведінкових перевірок `serve` не робить: після зміни картки автор запускає `dreet validate`.
 
 ## 3. Контракти модулів
 
@@ -134,8 +136,6 @@ type Manager interface {
 	// WriteCode атомарно (temp-файл у тій самій директорії + rename) перезаписує лише EntryFile.
 	WriteCode(ws Workspace, code string) error
 	ReadCode(ws Workspace) (string, error)
-	// Diff — чиста функція: unified diff між кодом користувача та еталоном.
-	Diff(userCode, solutionCode string) string
 	// Cleanup ідемпотентно видаляє директорію сесії.
 	Cleanup(ws Workspace) error
 }
@@ -159,7 +159,7 @@ const (
 )
 
 type Diagnostic struct {
-	File     string // відносно workDir, напр. "kata.go"
+	File     string // відносно workDir, напр. "kata.go": префікс workDir і "./" відрізаються
 	Line     int    // 1-based
 	Col      int    // 1-based; 0 якщо невідомо
 	Severity string // "error" | "warning"
@@ -170,7 +170,7 @@ type Result struct {
 	Status      Status
 	Duration    time.Duration // у DTO віддається як duration_ms (int64)
 	Diagnostics []Diagnostic
-	RawOutput   string // обрізається до 64 КБ
+	RawOutput   string // конкатенація полів Output подій go test -json; понад 64 КБ лишається хвіст
 }
 
 type Runner interface {
@@ -188,15 +188,16 @@ type Registry interface {
 
 **GoRunner**
 - Запускає `go test -race -json -count=1 -timeout=5s ./...` у `workDir`.
-- Процес отримує окрему групу (`SysProcAttr{Setpgid: true}`). Загальний `context.WithTimeout` трохи довший за `-timeout`: він покриває ще й компіляцію. Коли контекст скасовано, викликається `syscall.Kill(-pgid, SIGKILL)` і процес чекається через `Wait`.
-- Оточення: `CGO_ENABLED=1`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `GOCACHE=/var/cache/go-build`, `GOTMPDIR=/tmp`.
+- Процес отримує окрему групу (`SysProcAttr{Setpgid: true}`). Загальний дедлайн контексту — 15 с: `-timeout=5s` на тести плюс запас на компіляцію з `-race`. Коли контекст скасовано, викликається `syscall.Kill(-pgid, SIGKILL)` і процес чекається через `Wait`. Після **кожного** `Wait` `Kill(-pgid, SIGKILL)` викликається ще раз (`ESRCH` ігнорується): якщо `go test -timeout` завершив тестовий процес сам, його нащадки інакше лишилися б жити (REQ-FR-10).
+- Оточення: успадковується від `dreet` (`os.Environ()`), поверх нього задаються лише `CGO_ENABLED=1`, `GOPROXY=off`, `GOTOOLCHAIN=local` і `GORACE=atexit_sleep_ms=0`. Без останнього race-детектор чекає 1 с перед виходом тестового процесу, і REQ-NFR-01 недосяжна. `GOCACHE=/var/cache/go-build` і `GOTMPDIR=/tmp` задає `ENV` у Dockerfile, а не код, тож `dreet validate` працює й на хості з типовим кешем Go.
+- Діагностики приймають обидві форми рядка: `kata.go:18:12: msg` і `./kata.go:18:12: msg`; абсолютні шляхи з трасувань `DATA RACE` перетворюються на відносні до `workDir`.
 
 Статус визначається з потоку подій `go test -json` за пріоритетом:
 
 | Пріоритет | Умова | Статус |
 | :---- | :---- | :---- |
 | 1 | Контекст перевищив дедлайн, або у виводі є `panic: test timed out` | `timeout` |
-| 2 | `Action == "build-fail"` або `build-output` з помилками компіляції | `compile_error`; рядки виду `./kata.go:18:12: msg` стають діагностиками |
+| 2 | `Action == "build-fail"` або `build-output` з помилками компіляції | `compile_error`; рядки виду `kata.go:18:12: msg` стають діагностиками |
 | 3 | У виводі є `WARNING: DATA RACE` | `test_fail`; діагностика рівня `error` з посиланнями на рядки з трасування |
 | 4 | `Action == "fail"` | `test_fail`; діагностики беруться з рядків `kata_test.go:N:` / `kata.go:N:` у виводі `t.Error`/`t.Fatal` |
 | 5 | `Action == "pass"` на рівні пакета | `pass` |
@@ -308,7 +309,7 @@ type Store interface {
 	SyncCards(ctx context.Context, cards []DeckCardMeta) error
 	NextDue(ctx context.Context, now time.Time, opts NextOptions) (CardState, error)
 	RecordAttempt(ctx context.Context, in AttemptInput) (CardState, Grade, error)
-	Stats(ctx context.Context, now time.Time) (Stats, error)
+	Stats(ctx context.Context, now time.Time, newPerDay int) (Stats, error)
 	Close() error
 }
 
@@ -317,9 +318,9 @@ func EvaluateGrade(in AttemptInput) Grade
 func ScheduleSM2(st CardState, g Grade, now time.Time, rnd func() float64) CardState
 ```
 
-`RecordAttempt` виконується в одній транзакції: `EvaluateGrade`, потім `ScheduleSM2`, потім `INSERT attempts` і `UPDATE card_state`. `rnd` ін'єктується, щоб jitter був детермінованим у тестах.
+`RecordAttempt` виконується в одній транзакції: `EvaluateGrade`, потім `ScheduleSM2`, потім `INSERT attempts` і `UPDATE card_state`. `elapsed_sec = floor(FinishedAt − StartedAt)` у секундах обчислює сам `RecordAttempt`. Якщо транзакція не вдалася, повертається помилка, і в БД нічого не змінюється. `rnd` ін'єктується, щоб jitter був детермінованим у тестах.
 
-**Оцінка (`EvaluateGrade`).** Правила перевіряються згори вниз, спрацьовує перше.
+**Оцінка (`EvaluateGrade`).** Правила перевіряються згори вниз, спрацьовує перше. `elapsed` — це `FinishedAt.Sub(StartedAt).Seconds()` як `float64`, а `target` — `TargetSec`.
 
 | Оцінка | Умова | Зміст |
 | :---- | :---- | :---- |
@@ -342,18 +343,18 @@ func ScheduleSM2(st CardState, g Grade, now time.Time, rnd func() float64) CardS
 - `I = min(60.0, I)`. Стеля застосовується **після** jitter, тож інтервал ніколи не перевищує 60 днів.
 - `due_at = now + I × 86400`, а `last_reviewed_at = now`.
 
-**Черга (`NextDue`).**
-1. Прострочені: `active = 1 AND due_at > 0 AND due_at <= now`, порядок `ORDER BY due_at ASC, ease_factor ASC`.
-2. Нові: `active = 1 AND reps = 0 AND lapses = 0 AND due_at = 0`, причому `prereq_card_id IS NULL` або батьківська картка має хоча б одну спробу `pass` (`EXISTS (SELECT 1 FROM attempts WHERE card_id = prereq_card_id AND status = 'pass')`). `reps` для цього не годиться: це серія, яка скидається після оцінки Again, а Again можливий і при `pass`. Порядок `ORDER BY deck_id, sort_order`. Видаються, лише поки кількість карток, чия перша спроба завершилася сьогодні, менша за `NewPerDay`.
-3. Якщо нічого не знайдено, повертається `ErrNoCardsDue`. З `Ahead` замість цього видається активна картка з мінімальним `due_at > now`.
+**Черга (`NextDue`).** `today_start` — 00:00 UTC поточної доби, `tomorrow_start = today_start + 86400`.
+1. До повторення: `active = 1 AND due_at > 0 AND due_at < tomorrow_start`, порядок `ORDER BY due_at ASC, ease_factor ASC`. Строк рахується по добі, а не до секунди: картка з `due_at` сьогодні о 20:00 UTC видається вже зранку, як і рахує `DueToday`.
+2. Нові: `active = 1 AND reps = 0 AND lapses = 0 AND due_at = 0`, причому `prereq_card_id IS NULL` або батьківська картка має хоча б одну спробу `pass` (`EXISTS (SELECT 1 FROM attempts WHERE card_id = prereq_card_id AND status = 'pass')`). `reps` для цього не годиться: це серія, яка скидається після оцінки Again, а Again можливий і при `pass`. Порядок `ORDER BY deck_id, sort_order`. Видаються, лише поки `new_today < NewPerDay`, де `new_today` — кількість різних `card_id`, у яких `MIN(attempts.finished_at) >= today_start`.
+3. Якщо нічого не знайдено, повертається `ErrNoCardsDue`. З `Ahead` замість цього видається активна картка з мінімальним `due_at >= tomorrow_start`.
 
 «Сьогодні» — це доба UTC: межа йде о 00:00 UTC. `TZ` контейнера на це не впливає, і прапорця для зміни часового поясу немає.
 
-**Статистика (`Stats`).** Вікно — 30 днів.
-- `DueToday`: прострочені на кінець доби плюс доступні нові в межах залишку ліміту.
-- `ReviewedToday`: спроби, завершені сьогодні.
-- `CleanCompileRate`: частка спроб з `compile_errors == 0`.
-- `WeakTags`: 5 тегів з найнижчим `AvgGrade`.
+**Статистика (`Stats`).** Вікно — спроби з `finished_at >= now − 30 × 86400`; враховуються лише активні картки.
+- `DueToday`: картки з п. 1 черги плюс `min(NewPerDay − new_today, кількість доступних нових)`, не менше 0.
+- `ReviewedToday`: кількість різних `card_id` зі спробою (`pass` або `giveup`), завершеною після `today_start`.
+- `CleanCompileRate`: частка спроб вікна з `compile_errors == 0`; 0, якщо спроб немає.
+- `WeakTags`: спроба зараховується кожному тегу своєї картки; 5 тегів з найнижчим `AvgGrade`, за рівності — за назвою тегу за зростанням; теги без спроб у вікні не показуються.
 
 ### 3.5 `internal/session`
 
@@ -367,6 +368,8 @@ type Attempt struct {
 	HintsUsed        int
 	Finished         bool   // pass або giveup
 	FinalStatus      string // "pass" | "giveup"
+	Grade            int    // 1..4 після завершення, 0 до нього
+	NextDays         int    // ceil(interval_days) після завершення
 	UnlockedSolution bool
 }
 
@@ -375,7 +378,7 @@ type Service interface {
 	Next(ctx context.Context, ahead bool) (CardView, error) // srs.ErrNoCardsDue, ErrAttemptInProgress
 	Run(ctx context.Context, cardID, code string) (RunOutcome, error)
 	Hint(ctx context.Context, cardID string) (HintView, error)
-	GiveUp(ctx context.Context, cardID string) (GiveUpOutcome, error)
+	GiveUp(ctx context.Context, cardID, code string) (GiveUpOutcome, error)
 	Diff(ctx context.Context, cardID string) (DiffView, error)
 	Stats(ctx context.Context) (srs.Stats, error)
 }
@@ -395,13 +398,16 @@ var (
 - `Run`, `Hint` і `GiveUp` без спроби, на завершеній спробі або з чужим `cardID` повертають `ErrNoActiveAttempt`.
 - `Next` при незавершеній спробі повертає `ErrAttemptInProgress`. Пропуску картки немає: щоб перейти далі, треба `pass` або `GiveUp`. Інакше `Alt+N` скидав би таймер і давав обійти оцінку, а детермінована черга повертала б ту саму картку.
 - `timeout` збільшує `TestFails`.
-- `Diff` працює з поточною або щойно завершеною спробою. Без спроби або з чужим `cardID` повертає `ErrNoAttempt`.
+- `Run` виконує перевірку з контекстом, не прив'язаним до HTTP-запиту (`context.WithoutCancel`): від'єднання клієнта не скасовує прогін, і лічильники фіксуються однаково.
+- `Run` з `pass` і `GiveUp` позначають спробу завершеною лише після успішного `RecordAttempt`. Якщо він повернув помилку, спроба лишається активною, еталон заблокованим, а клієнт отримує 500.
+- `GiveUp` спершу записує переданий `code` через `sandbox.WriteCode`, щоб diff показав останню версію з редактора.
+- `Diff` працює з поточною або щойно завершеною спробою. Без спроби або з чужим `cardID` повертає `ErrNoAttempt`. Після `Next` або перезапуску сервера попередня спроба вже недоступна.
 
 ### 3.6 `internal/api` і `internal/web`
 
 - Маршрутизація стандартним `http.ServeMux` з шаблонами `METHOD /path`.
 - Доменні помилки мапляться на HTTP **по ендпоінту** (таблиця в §5). Однакова помилка може давати різні коди залежно від ендпоінту, наприклад `ErrNoAttempt`: 204 для `current` і 404 для `diff`.
-- Усе тіло запиту, разом з JSON-екрануванням і іншими полями, обмежено `http.MaxBytesReader` до 262144 байт. Перевищення дає 400 `bad_request`.
+- Усе тіло запиту, разом з JSON-екрануванням і іншими полями, обмежено `http.MaxBytesReader` до 262144 байт. Перевищення, некоректний JSON або відсутнє обов'язкове поле (зокрема `card_id` у query `diff`) дають 400 `bad_request`.
 - `internal/api` викликає лише `session.Service`. Імпортувати `srs` і `runner` дозволено тільки заради типів-значень (`srs.Stats`, `runner.Result`, `runner.Diagnostic`) і sentinel-помилок (`srs.ErrNoCardsDue`) для серіалізації й мапінгу кодів.
 - `internal/web`: шлях поза `/api/` віддає файл з `embed.FS`. Якщо файлу немає, віддається `index.html` (SPA fallback). Для `assets/*` з хешем у назві ставиться `Cache-Control: immutable`.
 
@@ -413,21 +419,21 @@ var (
   - знизу вивід тестів і діагностики;
   - `Alt+D` замінює редактор на `MergeView` (`@codemirror/merge`).
 - **Набір розширень CodeMirror** — лише явний список:
-  - дозволено: `lineNumbers`, `history`, `drawSelection`, `indentOnInput`, `bracketMatching`, `syntaxHighlighting`, `go()`, `lintGutter` з діагностиками від бекенду, власний `keymap`;
-  - **не використовуються:** `basicSetup` (він тягне `autocompletion` і `closeBrackets`), `autocompletion`, `closeBrackets`, сніпети, будь-які LSP-клієнти.
+  - дозволено: `lineNumbers`, `history` з `historyKeymap`, `drawSelection`, `indentOnInput`, `bracketMatching`, `syntaxHighlighting(defaultHighlightStyle)`, `go()`, `lintGutter` разом із `setDiagnostics` (діагностики від бекенду, без `linter`), `defaultKeymap`, `indentWithTab`, власний `keymap`;
+  - **не використовуються:** `basicSetup` (він тягне `autocompletion` і `closeBrackets`), `autocompletion` і `completionKeymap`, `closeBrackets` і `closeBracketsKeymap`, сніпети, будь-які LSP-клієнти.
 - Для `contenteditable` вимикаються `spellcheck`, `autocorrect` і `autocapitalize`.
 - Хоткеї `Ctrl+S`, `Alt+H`, `Alt+D` і `Alt+N` перехоплюються з `preventDefault`.
 - Таймер рахується від `started_at`, який повертає сервер.
-- На старті UI викликає `GET /api/session/current`. Якщо відповідь 204 або спробу завершено, наступну картку бере `POST /api/session/next`.
+- На старті UI викликає `GET /api/session/current`. Якщо відповідь 204, наступну картку бере `POST /api/session/next`. Завершену спробу (`finished: true`) UI показує з оцінкою й доступним `Alt+D` і бере наступну картку лише за `Alt+N`.
 
 ## 4. Основні потоки
 
 ### 4.1 Старт картки — `POST /api/session/next`
-1. `deck.LoadAll`, потім `srs.SyncCards`. Синхронізація запускається на старті `serve` і в кожному `Next`.
-2. `srs.NextDue(now, {Ahead, NewPerDay})` повертає `card_id`, далі `deck.Get(card_id)`.
-3. Якщо попередня спроба не завершена, повертається `ErrAttemptInProgress` (409). Завершену спробу прибирає `sandbox.Cleanup(prev.WS)`.
-4. `sandbox.Prepare(card)` створює `/work/<session_id>`.
-5. Ініціалізується `Attempt{StartedAt: now}`.
+1. Якщо попередня спроба не завершена, одразу повертається `ErrAttemptInProgress` (409), без читання диска й БД.
+2. `deck.LoadAll`, потім `srs.SyncCards`. Синхронізація запускається на старті `serve` і в кожному `Next`.
+3. `srs.NextDue(now, {Ahead, NewPerDay})` повертає `card_id`, далі `deck.Get(card_id)`.
+4. `sandbox.Prepare(card)` створює `/work/<session_id>`. Якщо це не вдалося, повертається помилка (500), а попередня спроба лишається як була.
+5. Лише тепер `sandbox.Cleanup(prev.WS)` прибирає пісочницю попередньої, завершеної спроби, і ініціалізується `Attempt{StartedAt: now}`.
 6. Відповідь: CardView (§5).
 
 ### 4.2 Перевірка — `POST /api/attempt/run`
@@ -448,15 +454,15 @@ Web UI (Ctrl+S) ── POST {card_id, code} ──▶ api ──▶ session.Run
 Якщо `HintsUsed < len(card.Hints)`, повертається `card.Hints[HintsUsed]`, а `HintsUsed` збільшується. Інакше `ErrHintsExhausted`.
 
 ### 4.4 Здача — `POST /api/attempt/giveup`
-`srs.RecordAttempt(Passed: false)` дає оцінку 1. Потім `Finished = true`, `UnlockedSolution = true`.
+`sandbox.WriteCode(ws, code)`, далі `srs.RecordAttempt(Passed: false)` дає оцінку 1. Лише після успішного запису `Finished = true`, `UnlockedSolution = true`.
 
 ### 4.5 Рев'ю еталона — `GET /api/attempt/diff`
 1. Якщо `UnlockedSolution` не встановлено, повертається `ErrSolutionLocked` (403).
-2. `sandbox.ReadCode(ws)`, далі `card.Solution` з пам'яті `deck`, далі `sandbox.Diff`.
-3. Відповідь: `{user_code, solution_code, unified_diff}`.
+2. `sandbox.ReadCode(ws)`, далі `card.Solution` з пам'яті `deck`.
+3. Відповідь: `{user_code, solution_code}`. Різницю обчислює `MergeView` на клієнті; серверного diff немає.
 
 ### 4.6 Валідація — `dreet validate --decks <dir>`
-`deck.LoadAll` виконує структурні правила. Потім для кожної картки створюються дві тимчасові директорії, `stub` і `solution`, і для кожної викликається `Runner.Check`. Звіт друкується в stdout. Код виходу: 0, якщо все валідне, 1, якщо є невалідні картки, 2, якщо помилка інфраструктури.
+`deck.LoadAll` виконує структурні правила. Потім для кожної картки створюються дві тимчасові директорії, `stub` і `solution`, і для кожної викликається `Runner.Check`. Звіт друкується в stdout. Код виходу: 0, якщо все валідне, 1, якщо є невалідні картки або не знайдено жодної, 2, якщо помилка інфраструктури.
 
 ## 5. HTTP API
 
@@ -469,8 +475,8 @@ Web UI (Ctrl+S) ── POST {card_id, code} ──▶ api ──▶ session.Run
 | `POST /api/session/next` | NextRequest | CardView | 204 (`ErrNoCardsDue`), 409 `attempt_in_progress` |
 | `POST /api/attempt/run` | RunRequest | RunResponse | 400 `bad_request`, 409 `no_active_attempt` |
 | `POST /api/attempt/hint` | CardRef | HintView | 404 `hints_exhausted`, 409 `no_active_attempt` |
-| `POST /api/attempt/giveup` | CardRef | GiveUpResponse | 409 `no_active_attempt` |
-| `GET /api/attempt/diff` | `?card_id=…` | DiffView | 403 `solution_locked`, 404 `not_found` (`ErrNoAttempt`) |
+| `POST /api/attempt/giveup` | GiveUpRequest | GiveUpResponse | 400 `bad_request`, 409 `no_active_attempt` |
+| `GET /api/attempt/diff` | `?card_id=…` | DiffView | 400 `bad_request`, 403 `solution_locked`, 404 `not_found` (`ErrNoAttempt`) |
 | `GET /api/stats` | — | StatsView | 500 `internal` |
 
 Схеми запитів і відповідей (CheckResult і Diagnostic визначено в requirements.md §0):
@@ -497,6 +503,11 @@ Web UI (Ctrl+S) ── POST {card_id, code} ──▶ api ──▶ session.Run
   code: String @constraint(required, rule: "whole JSON request body <= 262144 bytes (§3.6)")
 }
 
+@schema GiveUpRequest {
+  card_id: String @constraint(required),
+  code: String @constraint(required, rule: "current editor content, written before the attempt closes; same body limit as RunRequest")
+}
+
 @schema CardView {
   id: String,
   lang: String,
@@ -507,8 +518,12 @@ Web UI (Ctrl+S) ── POST {card_id, code} ──▶ api ──▶ session.Run
   target_sec: Int,
   hints_total: Int,
   hints_used: Int,
+  hints_shown: [String] @constraint(rule: "card.Hints[:hints_used]; restores revealed hints after reload without spending a new one"),
   started_at: String @constraint(format: "RFC 3339"),
   finished: Bool,
+  final_status: Enum["pass","giveup"]? @constraint(rule: "only when finished"),
+  grade: Int? @constraint(range: [1, 4], rule: "only when finished"),
+  srs_next_days: Int? @constraint(rule: "only when finished"),
   srs_meta: { reps: Int, lapses: Int, ease_factor: Float, interval_days: Float, is_new: Bool }
 }
 
@@ -532,8 +547,7 @@ Web UI (Ctrl+S) ── POST {card_id, code} ──▶ api ──▶ session.Run
 
 @schema DiffView {
   user_code: String,
-  solution_code: String,
-  unified_diff: String
+  solution_code: String
 }
 
 @schema StatsView {
@@ -580,6 +594,15 @@ Web UI (Ctrl+S) ── POST {card_id, code} ──▶ api ──▶ session.Run
 14. **`/data` — іменований том** `dreet-data`, а не bind-mount `./data`. Bind-mount належав би користувачу хоста або root, і UID 10001 не зміг би записати БД.
 15. **Межа доби — 00:00 UTC** для `NewPerDay`, `ReviewedToday` і `DueToday`.
 16. **Розмітка tumanomir.** Вимоги мають ID REQ-FR/NFR/CON/AC і трасування; модель даних і DTO описано через `@schema`. Додано вимогу REQ-FR-16 (заборона пропуску спроби), а в CardView — поле `hints_used`, бо без нього UI не відновить лічильник підказок після перезавантаження (REQ-FR-15).
+
+17. **Рев'ю консиліуму (2026-11-23).** Сам документ і REQ уточнено так:
+    - Видалено серверний unified diff: `MergeView` порівнює тексти сам.
+    - `GORACE=atexit_sleep_ms=0`, точний дедлайн 15 с, повторний `Kill(-pgid)` після `Wait`, оточення `GoRunner` поверх `os.Environ()`.
+    - Черга рахує строк повторення по добі UTC, як і `DueToday`. `Stats` отримує `newPerDay`, а агрегати мають точні визначення.
+    - `next` перевіряє незавершену спробу першою і прибирає попередню пісочницю лише після успішного `Prepare`.
+    - `giveup` приймає поточний код. `CardView` повертає показані підказки й результат завершеної спроби. Збій транзакції лишає спробу активною.
+    - Звужено `entry_file` і формат `go.mod`. `validate` без жодної картки завершується з кодом 1.
+    - REQ-NFR-06 більше не обіцяє незмінний `sandbox` для нової мови. Додано REQ-AC-6 для SRS.
 
 ## 8. Відкриті питання
 
