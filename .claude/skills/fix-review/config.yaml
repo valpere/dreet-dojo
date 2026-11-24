@@ -1,5 +1,5 @@
 # fix-review config for dreet-dojo — deployed copy of ~/wrk/common_claude/skills/fix-review/config.yaml
-# (2026-11-22, canonical models unchanged). Sync diff-first from canon; the only deliberate deviation is in SKILL.md (optional key, 2026-11-22).
+# (2026-11-22; synced with canon c3f1b91 on 2026-11-24, models as canon). Sync diff-first from canon; the only deliberate deviation is in SKILL.md (optional key, 2026-11-22).
 # Key: optional — `:cloud` models go through the signed-in local daemon (no OLLAMA_API_KEY needed). Gates: Makefile `check:` target (auto-detected).
 #
 #
@@ -43,6 +43,10 @@ reviewers:
     # in ~10 s / ~650 tokens within the normal 4000 cap — measured
     # 2026-10-24 here; github_pages reached the same via PRs #139/#140/#143
     # (2026-09-21). "medium" is already too much (4000 tokens, empty).
+    # Counter-observation (tumanomir, 2026-11-24): glm-5.3 with think:false returned
+    # valid JSON in all 9 runs there (PRs #151-#165) — the prose leak depends on prompt
+    # or diff size, not the model alone. Keep "low" here; do not force it on a project
+    # whose own telemetry shows think:false working.
     round_1: { model: glm-5.3:cloud, think: low }
     round_2: { model: deepseek-v4.1-flash:cloud }
     round_3: { model: kimi-k2.7-code:cloud }
@@ -64,7 +68,12 @@ reviewers:
     - { tool: agy, model: "Gemini 3.8 Flash (Low)" }
     - { tool: omp }
     - { tool: codex }
-    - { tool: opencode, model: "opencode/nemotron-3-ultra-free" }
+    # opencode: nemotron-3-ultra-free retired ("Model unavailable", 2026-11-24, from
+    # tumanomir PR #155). mimo-v2.6-flash-free returned a valid JSON findings array via
+    # agent_opencode (7 s, 2026-11-24) and is a family no Ollama round uses; also live:
+    # deepseek-v4.1-flash-free (same family as round_2), nemotron-3.5-lightning-free.
+    # Free tags rotate: check `opencode models | grep -- -free`.
+    - { tool: opencode, model: "opencode/mimo-v2.6-flash-free" }
     - { tool: kilo }
     - { tool: kiro-cli }
 
