@@ -130,9 +130,10 @@ API_KEY="${!API_KEY_ENV:-}"
 [ -z "$API_KEY" ] && [ "$LOCAL_ONLY" != "true" ] && echo "note: no $API_KEY_ENV — using the signed-in local daemon for cloud models" >&2
 ```
 
-A missing key is not fatal (dreet-dojo deviation from canon, 2026-11-22): the
-probe decides whether the cloud tier works, and a failed probe with no failover
-tier still marks `cloud_unavailable`, so a broken setup cannot pass silently.
+A missing key is not fatal (ported from dreet-dojo, 2026-11-24; a keyless
+`glm-5.3:cloud` call via the signed-in daemon verified live): the probe decides
+whether the cloud tier works, and a failed probe with no failover tier still marks
+`cloud_unavailable`, so a broken setup cannot pass silently.
 When `local_only: true`, the probe and failover are skipped
 and `reviewers.ollama` (local models) runs as primary.
 
@@ -393,7 +394,8 @@ run_round() {
   # failover to local models, whose ACTIVE_MODELS are different).
   local think=false think_val=false cap=4000 retry_cap=2000
   if [ "$FAILOVER_TIER" = "" ]; then
-    think_val=$(yq -c ".reviewers.ollama.round_${n}.think // false" "$CONFIG" 2>/dev/null || echo false)
+    think_val=$(yq -c ".reviewers.ollama.round_${n}.think // false" "$CONFIG" 2>/dev/null) \
+      || { echo "warn: cannot read round_${n}.think (yq failed) — think disabled" >&2; think_val=false; }
     if [ "$think_val" != "false" ]; then
       # level string (e.g. "low"): normal cap, same-cap retry. Do not use "medium" —
       # measured to burn all 4000 tokens on thinking and return empty content.

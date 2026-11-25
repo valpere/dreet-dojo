@@ -121,8 +121,8 @@ Open the UI with `chromium --app=http://127.0.0.1:8787`.
 branches and squash-merge. No required CI checks yet.
 
 PR review: `/fix-review <PR>` (project-local, `.claude/skills/fix-review/`; three Ollama Cloud rounds, Claude as
-arbiter). No API key needed: `:cloud` models go through the signed-in local daemon on `localhost:11434`; this
-copy makes `OLLAMA_API_KEY` optional, a deliberate deviation from canon. After review, land with `minions/pr-land.sh <PR>`. The skill is a
+arbiter). No API key needed: `:cloud` models go through the signed-in local daemon on `localhost:11434`; `OLLAMA_API_KEY`
+is optional (canon since 2026-11-24, ported from here). After review, land with `minions/pr-land.sh <PR>`. The skill is a
 deployed copy of `~/wrk/common_claude/skills/fix-review/`: change canon first, then sync diff-first.
 
 ## Agent tooling
