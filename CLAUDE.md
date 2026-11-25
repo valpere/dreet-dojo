@@ -136,10 +136,9 @@ deployed copy of `~/wrk/common_claude/skills/fix-review/`: change canon first, t
   needs every corpus row to share it.
 - Session tooling (local, gitignored state; hook registration lives only in the gitignored
   `.claude/settings.local.json`, so set it up again by hand on a fresh clone):
-  - `.claude/hooks/session-end.sh` and `session-index.sh` run on Stop: a verbatim checkpoint, plus mining into
-    `.claude/sessions.db`.
-  - `session-last.sh` runs on SessionStart.
-  - `/session-end` writes the reviewed handoff `.claude/session-state.md`; `/recall` searches past sessions.
+  - `.claude/hooks/session-index.sh` runs on Stop and mines the session into `.claude/sessions.db`.
+  - `/session-end` writes a manual handoff `.claude/session-state.md`, read only on request; `/recall` searches
+    past sessions.
   - The systemd timer `session-maintain-dreet-dojo` runs embed + distill nightly.
 - `/self-learn log` records sourced mistakes and wins in `_patterns/`. Raw `*.jsonl` is gitignored; the `.md`
   summaries are tracked. ADRs stay in `docs/architecture.md` §7.
